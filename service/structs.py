@@ -4,7 +4,7 @@
 """
 
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Generic, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -43,7 +43,10 @@ class BaseResponse(BaseModel):
     """
 
 
-class CallResponse(BaseModel):
+TResponse = TypeVar("TResponse", bound=BaseResponse)
+
+
+class CallResponse(BaseModel, Generic[TResponse]):
     """RPC 调用响应模型.
 
     Attributes:
@@ -55,7 +58,7 @@ class CallResponse(BaseModel):
 
     ok: bool = Field(..., description="操作是否成功")
     unified_msg_origin: str = Field(..., description="会话的唯一 ID 标识符")
-    data: BaseResponse | None = Field(..., description="方法调用返回的数据")
+    data: TResponse | None = Field(..., description="方法调用返回的数据")
     error_message: str = Field(..., description="错误信息，如果有的话")
 
 

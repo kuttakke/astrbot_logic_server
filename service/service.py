@@ -104,7 +104,7 @@ class RPCServer(metaclass=SingletonMeta):
             if not isinstance(result, meta.resp_model):
                 raise TypeError(f"Return type mismatch for {req.method}")
 
-            resp = CallResponse(
+            resp = CallResponse[meta.resp_model](
                 ok=True,
                 unified_msg_origin=req.unified_msg_origin,
                 error_message="",
