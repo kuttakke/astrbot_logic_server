@@ -3,6 +3,9 @@
 提供 RPC 通信中使用的基础 Pydantic 模型。
 """
 
+from dataclasses import dataclass
+from typing import Callable
+
 from pydantic import BaseModel, Field
 
 
@@ -26,6 +29,8 @@ class CallParameters(BaseModel):
         method: 要调用的方法名称，格式为 "模块名.方法名"
         params: 方法调用的参数，继承自 BaseParameters
     """
+
+    module_id: str = Field(..., description="模块唯一标识符")
     unified_msg_origin: str = Field(..., description="会话的唯一 ID 标识符")
     method: str = Field(..., description="要调用的方法名称")
     params: BaseParameters = Field(..., description="方法调用的参数")
@@ -47,7 +52,19 @@ class CallResponse(BaseModel):
         data: 方法调用返回的数据，类型为 BaseResponse 或 None
         error_message: 错误信息，如果有的话
     """
+
     ok: bool = Field(..., description="操作是否成功")
     unified_msg_origin: str = Field(..., description="会话的唯一 ID 标识符")
     data: BaseResponse | None = Field(..., description="方法调用返回的数据")
     error_message: str = Field(..., description="错误信息，如果有的话")
+
+
+@dataclass
+class ApiMeta:
+    """API 方法元信息."""
+
+    func: Callable
+    param_model: type[BaseParameters]
+    resp_model: type[BaseResponse]
+    is_async: bool
+    method_name: str = ""

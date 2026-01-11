@@ -5,7 +5,7 @@
 """
 
 import asyncio
-import importlib
+from pathlib import Path
 
 from service.service import RPCServer
 from utils.logger import setup_logger
@@ -16,8 +16,7 @@ def main() -> None:
     setup_logger()
 
     server = RPCServer()
-    # 导入模块即可自动注册其中的 @api 方法和生命周期钩子
-    importlib.import_module("modules.test1.test")
+    server.load_modules(modules_dir=Path(Path.cwd(), "modules"))
 
     asyncio.run(server.start())
 

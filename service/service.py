@@ -5,34 +5,23 @@
 
 import asyncio
 import inspect
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, get_type_hints
+from typing import Any, Callable
 
 import msgpack
 from loguru import logger
 
+from service.module import Module
 from utils.singleton import SingletonMeta
 
 from .structs import BaseParameters, BaseResponse, CallParameters, CallResponse
 
-_start = """/n
+_start = """
 #################################
-#       Astrbot Logic Server     #
-#       RPC Server Started       #
+#       Astrbot Logic Server    #
+#       RPC Server Started      #
 #################################
 """
-
-
-@dataclass
-class ApiMeta:
-    """API 方法元信息."""
-
-    func: Callable
-    param_model: type[BaseParameters]
-    resp_model: type[BaseResponse]
-    is_async: bool
-    method_name: str = ""
 
 
 class RPCServer(metaclass=SingletonMeta):
@@ -40,25 +29,29 @@ class RPCServer(metaclass=SingletonMeta):
 
     def __init__(self, socket_path: Path = Path("/run/logic/logic.sock")):
         self.socket_path: Path = socket_path
-        self.handlers: dict[str, ApiMeta] = {}
-        self.start_hooks: list[Callable] = []
-        self.shutdown_hooks: list[Callable] = []
         self._is_running: bool = False
+        self.modules: dict[str, "Module"] = {}
 
-    def _register_api(self, method_name: str, meta: ApiMeta) -> None:
-        """注册 API 方法."""
-        if method_name in self.handlers:
-            raise ValueError(f"Method '{method_name}' already registered")
-        logger.debug(f"Registering API method: {method_name}")
-        self.handlers[method_name] = meta
+    def _register_module(self, module: "Module") -> None:
+        """注册模块."""
+        if module.name in self.modules:
+            return
+        logger.debug(f"Registering module: {module.name}")
+        self.modules[module.name] = module
 
     async def _execute_hooks(self, hooks: list[Callable]) -> None:
         """执行生命周期钩子."""
         for hook in hooks:
             if inspect.iscoroutinefunction(hook):
-                await hook()
+                try:
+                    await hook()
+                except Exception as e:
+                    logger.error(f"Error executing hook {hook.__name__}: {e}")
             else:
-                await asyncio.to_thread(hook)
+                try:
+                    await asyncio.to_thread(hook)
+                except Exception as e:
+                    logger.error(f"Error executing hook {hook.__name__}: {e}")
 
     async def _read_msgpack(self, reader: asyncio.StreamReader) -> dict[str, Any]:
         """从流中读取 msgpack 数据."""
@@ -77,12 +70,18 @@ class RPCServer(metaclass=SingletonMeta):
         writer.write(packed)  # type: ignore
         await writer.drain()
 
-    async def _call_handler(self, method: str, params: BaseParameters) -> BaseResponse:
+    async def _call_handler(
+        self, module_id: str, method: str, params: BaseParameters
+    ) -> BaseResponse:
         """调用对应的处理函数."""
-        if method not in self.handlers:
-            raise ValueError(f"Unknown method: {method}")
 
-        meta = self.handlers[method]
+        module = self.modules.get(module_id)
+        if not module:
+            raise ValueError(f"Unknown module: {module_id}")
+
+        meta = module.apis.get(method)
+        if not meta:
+            raise ValueError(f"Unknown method: {method}")
 
         if meta.is_async:
             result = await meta.func(params)
@@ -102,7 +101,7 @@ class RPCServer(metaclass=SingletonMeta):
             req = await self._read_msgpack(reader)
             call = CallParameters(**req)
             logger.debug(f"[RPC] Received call: {call.method}")
-            result = await self._call_handler(call.method, call.params)
+            result = await self._call_handler(call.module_id, call.method, call.params)
             logger.debug(f"[RPC] call {call.method} completed successfully")
             resp = CallResponse(
                 ok=True,
@@ -124,16 +123,28 @@ class RPCServer(metaclass=SingletonMeta):
         writer.close()
         await writer.wait_closed()
 
+    def load_modules(self, modules_dir: Path) -> None:
+        """加载指定目录下的所有模块."""
+        for module_path in modules_dir.iterdir():
+            if module_path.is_dir() and (module_path / "__init__.py").exists():
+                module_name = module_path.name
+                logger.info(f"Loading module: {module_name}")
+                __import__(f"modules.{module_name}")
+
     async def start(self) -> None:
         """启动 RPC 服务器."""
+
+        logger.info(_start)
+
         # 执行启动钩子
-        await self._execute_hooks(self.start_hooks)
+        for module in self.modules.values():
+            await self._execute_hooks(module.start_hooks)
 
         self.socket_path.unlink(missing_ok=True)
         server = await asyncio.start_unix_server(  # type: ignore[arg-type]
             self.handle_client, path=self.socket_path
         )
-        logger.info(_start)
+
         logger.info(f"RPC Server started at {self.socket_path}")
         self._is_running = True
 
@@ -146,79 +157,91 @@ class RPCServer(metaclass=SingletonMeta):
     async def shutdown(self) -> None:
         """关闭 RPC 服务器."""
         logger.info("Shutting down RPC Server...")
-        await self._execute_hooks(self.shutdown_hooks)
+        # 执行关闭钩子
+        for module in self.modules.values():
+            await self._execute_hooks(module.shutdown_hooks)
+
+    def generate_interface_code(self):
+        """生成接口代码供调用者使用."""
+        dir_ = Path(Path.cwd(), "generated")
+        dir_.mkdir(exist_ok=True)
+
+        typed = set()
+
+        for module in self.modules.values():
+            path = dir_ / f"{module.name.lower()}.py"
+            lines = [
+                "from .rpc_client import BaseParameters, BaseResponse, get_rpc_client",
+                "from astrbot.api.event import AstrMessageEvent",
+                "",
+                f"# ------------------- {module.name} -------------------",
+            ]
+            for api_name, api_meta in module.apis.items():
+                param_model_name = api_meta.param_model.__name__
+                resp_model_name = api_meta.resp_model.__name__
+                if api_meta.param_model not in typed:
+                    lines.append(f"class {param_model_name}(BaseParameters):")
+                    lines.extend(
+                        f"    {field_name}: {field_info.annotation.__name__}"  # type: ignore
+                        for field_name, field_info in api_meta.param_model.model_fields.items()
+                    )
+                    lines.append("")
+                    typed.add(api_meta.param_model)
+                if api_meta.resp_model not in typed:
+                    lines.append(f"class {resp_model_name}(BaseResponse):")
+                    lines.extend(
+                        f"    {field_name}: {field_info.annotation.__name__}"  # type: ignore
+                        for field_name, field_info in api_meta.resp_model.model_fields.items()
+                    )
+                    lines.append("")
+                    typed.add(api_meta.resp_model)
+
+            lines.extend(
+                (
+                    f"class {module.name.capitalize()}:",
+                    f'    module_id = "{module.id}"',
+                    "",
+                )
+            )
+            for api_name, api_meta in module.apis.items():
+                param_model_name = api_meta.param_model.__name__
+                resp_model_name = api_meta.resp_model.__name__
+
+                lines.extend(
+                    (
+                        "    @classmethod",
+                        f"    async def {api_name}(",
+                        "        cls,",
+                        f"        params: {param_model_name},",
+                        "        *,",
+                        "        event: AstrMessageEvent",
+                        f"    ) -> {resp_model_name}:",
+                        "        client = get_rpc_client()",
+                        "        return await client.call(",
+                        "            module_id=cls.module_id,",
+                        f'            method="{api_name}",',
+                        "            params=params,",
+                        "            unified_msg_origin=event.unified_msg_origin,",
+                        f"            resp_model={resp_model_name},",
+                        "        )",
+                        "",
+                    )
+                )
+            code = "\n".join(lines)
+            path.write_text(code, encoding="utf-8")
+            lines.append("")
+
+            code = "\n".join(lines)
+            path.write_text(code, encoding="utf-8")
 
 
 # 全局 RPC 服务器实例
 _rpc_server: RPCServer | None = None
 
 
-def _get_server() -> RPCServer:
+def get_server() -> RPCServer:
     """获取或创建全局 RPC 服务器实例."""
     global _rpc_server
     if _rpc_server is None:
         _rpc_server = RPCServer()
     return _rpc_server
-
-
-def api(
-    func: Callable | None = None,
-    *,
-    method_name: str | None = None,
-) -> Callable:
-    """API 方法装饰器.
-
-    自动将方法注册到全局 RPC 服务器。
-    方法签名: (params: Parameters) -> Response
-    """
-
-    def decorator(f: Callable) -> Callable:
-        hints = get_type_hints(f)
-
-        # 获取 params 参数
-        param_type = hints.get("params")
-        if not param_type or not issubclass(param_type, BaseParameters):
-            raise TypeError("Parameter 'params' must be a subclass of BaseParameters")
-
-        return_type = hints.get("return")
-        if not return_type or not issubclass(return_type, BaseResponse):
-            raise TypeError("Return type must be a subclass of BaseResponse")
-
-        is_async = inspect.iscoroutinefunction(f)
-
-        # 构建方法名
-        if method_name is not None:
-            full_method_name = method_name
-        else:
-            full_method_name = f.__name__
-
-        # 创建元信息并注册
-        meta = ApiMeta(
-            func=f,
-            param_model=param_type,
-            resp_model=return_type,
-            is_async=is_async,
-            method_name=full_method_name,
-        )
-        server = _get_server()
-        server._register_api(full_method_name, meta)
-
-        return f
-
-    if func is not None:
-        return decorator(func)
-    return decorator
-
-
-def on_start(func: Callable) -> Callable:
-    """启动钩子装饰器."""
-    server = _get_server()
-    server.start_hooks.append(func)
-    return func
-
-
-def on_shutdown(func: Callable) -> Callable:
-    """关闭钩子装饰器."""
-    server = _get_server()
-    server.shutdown_hooks.append(func)
-    return func
