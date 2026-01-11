@@ -212,33 +212,33 @@ class RPCServer(metaclass=SingletonMeta):
         for module in self.modules.values():
             path = dir_ / f"{module.name.lower()}.py"
             lines = [
-                "from .rpc_client import BaseParameters, BaseResponse, get_rpc_client",
+                f"# -------------------- generate {module.name} -------------------",
                 "from astrbot.api.event import AstrMessageEvent",
                 "",
-                f"# ------------------- {module.name} -------------------",
+                "from .rpc_client import BaseParameters, BaseResponse, CallResponse, get_rpc_client",
             ]
             for api_name, api_meta in module.apis.items():
                 param_model_name = api_meta.param_model.__name__
                 resp_model_name = api_meta.resp_model.__name__
                 if api_meta.param_model not in typed:
-                    lines.append(f"class {param_model_name}(BaseParameters):")
+                    lines.extend(("", "", f"class {param_model_name}(BaseParameters):"))
                     lines.extend(
                         f"    {field_name}: {field_info.annotation.__name__}"  # type: ignore
                         for field_name, field_info in api_meta.param_model.model_fields.items()
                     )
-                    lines.append("")
                     typed.add(api_meta.param_model)
                 if api_meta.resp_model not in typed:
-                    lines.append(f"class {resp_model_name}(BaseResponse):")
+                    lines.extend(("", "", f"class {resp_model_name}(BaseResponse):"))
                     lines.extend(
                         f"    {field_name}: {field_info.annotation.__name__}"  # type: ignore
                         for field_name, field_info in api_meta.resp_model.model_fields.items()
                     )
-                    lines.append("")
                     typed.add(api_meta.resp_model)
 
             lines.extend(
                 (
+                    "",
+                    "",
                     f"class {module.name.capitalize()}:",
                     f'    module_id = "{module.id}"',
                     "",
@@ -256,7 +256,7 @@ class RPCServer(metaclass=SingletonMeta):
                         f"        params: {param_model_name},",
                         "        *,",
                         "        event: AstrMessageEvent",
-                        f"    ) -> {resp_model_name}:",
+                        f"    ) -> CallResponse[{resp_model_name}]:",
                         "        client = get_rpc_client()",
                         "        return await client.call(",
                         "            module_id=cls.module_id,",
@@ -268,10 +268,6 @@ class RPCServer(metaclass=SingletonMeta):
                         "",
                     )
                 )
-            code = "\n".join(lines)
-            path.write_text(code, encoding="utf-8")
-            lines.append("")
-
             code = "\n".join(lines)
             path.write_text(code, encoding="utf-8")
 
