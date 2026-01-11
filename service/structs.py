@@ -33,7 +33,7 @@ class CallParameters(BaseModel):
     module_id: str = Field(..., description="模块唯一标识符")
     unified_msg_origin: str = Field(..., description="会话的唯一 ID 标识符")
     method: str = Field(..., description="要调用的方法名称")
-    params: BaseParameters = Field(..., description="方法调用的参数")
+    params: dict = Field(..., description="方法调用的参数")
 
 
 class BaseResponse(BaseModel):

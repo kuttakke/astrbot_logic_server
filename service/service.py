@@ -94,10 +94,12 @@ class RPCServer(metaclass=SingletonMeta):
             if not meta:
                 raise ValueError(f"Unknown method: {req.method}")
 
+            params = meta.param_model.model_validate(req.params)
+
             if meta.is_async:
-                result = await meta.func(req.params)
+                result = await meta.func(params)
             else:
-                result = await asyncio.to_thread(meta.func, req.params)
+                result = await asyncio.to_thread(meta.func, params)
 
             if not isinstance(result, meta.resp_model):
                 raise TypeError(f"Return type mismatch for {req.method}")
