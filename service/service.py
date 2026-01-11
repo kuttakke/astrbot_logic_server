@@ -34,10 +34,10 @@ class RPCServer(metaclass=SingletonMeta):
 
     def _register_module(self, module: "Module") -> None:
         """注册模块."""
-        if module.name in self.modules:
+        if module.id in self.modules:
             return
         logger.debug(f"Registering module: {module.name}")
-        self.modules[module.name] = module
+        self.modules[module.id] = module
 
     async def _execute_hooks(self, hooks: list[Callable]) -> None:
         """执行生命周期钩子."""
