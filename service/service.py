@@ -6,7 +6,7 @@
 import asyncio
 import inspect
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 import msgpack
 from loguru import logger
@@ -31,6 +31,8 @@ class RPCServer(metaclass=SingletonMeta):
         self.socket_path: Path = socket_path
         self._is_running: bool = False
         self.modules: dict[str, "Module"] = {}
+        self._write_lock = asyncio.Lock()
+        self.server = None
 
     def _register_module(self, module: "Module") -> None:
         """注册模块."""
@@ -53,22 +55,75 @@ class RPCServer(metaclass=SingletonMeta):
                 except Exception as e:
                     logger.error(f"Error executing hook {hook.__name__}: {e}")
 
-    async def _read_msgpack(self, reader: asyncio.StreamReader) -> dict[str, Any]:
-        """从流中读取 msgpack 数据."""
-        size_data = await reader.readexactly(4)
-        size = int.from_bytes(size_data, byteorder="big")
-        data = await reader.readexactly(size)
-        return msgpack.unpackb(data, raw=False)  # type: ignore[return-value]
-
-    async def _write_msgpack(
-        self, writer: asyncio.StreamWriter, message: dict[str, Any]
+    async def _handle_client(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        """将数据以 msgpack 格式写入流."""
-        packed = msgpack.packb(message, use_bin_type=True)
-        size = len(packed)  # type: ignore
-        writer.write(size.to_bytes(4, byteorder="big"))
-        writer.write(packed)  # type: ignore
-        await writer.drain()
+        try:
+            while True:
+                # 1️⃣ 读请求头
+                req_id = int.from_bytes(await reader.readexactly(4), "big")
+                size = int.from_bytes(await reader.readexactly(4), "big")
+
+                # 2️⃣ 读 payload
+                payload = await reader.readexactly(size)
+                data = msgpack.unpackb(payload, raw=False)
+
+                # 3️⃣ 交给 task 处理（不要阻塞读循环）
+                asyncio.create_task(self._handle_request(req_id, data, writer))
+
+        except asyncio.IncompleteReadError:
+            pass
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    async def _handle_request(
+        self,
+        req_id: int,
+        data: dict,
+        writer: asyncio.StreamWriter,
+    ):
+        try:
+            req = CallParameters(**data)
+
+            module = self.modules.get(req.module_id)
+            if not module:
+                raise ValueError(f"Unknown module: {req.module_id}")
+
+            meta = module.apis.get(req.method)
+            if not meta:
+                raise ValueError(f"Unknown method: {req.method}")
+
+            if meta.is_async:
+                result = await meta.func(req.params)
+            else:
+                result = await asyncio.to_thread(meta.func, req.params)
+
+            if not isinstance(result, meta.resp_model):
+                raise TypeError(f"Return type mismatch for {req.method}")
+
+            resp = CallResponse(
+                ok=True,
+                unified_msg_origin=req.unified_msg_origin,
+                error_message="",
+                data=result,
+            )
+
+        except Exception as e:
+            resp = CallResponse(
+                ok=False,
+                unified_msg_origin=req.unified_msg_origin,
+                data=None,
+                error_message=str(e),
+            )
+
+        payload = msgpack.packb(resp.model_dump(), use_bin_type=True)
+
+        async with self._write_lock:
+            writer.write(req_id.to_bytes(4, "big"))
+            writer.write(len(payload).to_bytes(4, "big"))  # type: ignore
+            writer.write(payload)  # type: ignore
+            await writer.drain()
 
     async def _call_handler(
         self, module_id: str, method: str, params: BaseParameters
@@ -93,36 +148,6 @@ class RPCServer(metaclass=SingletonMeta):
 
         return result
 
-    async def handle_client(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
-        """处理客户端连接."""
-        try:
-            req = await self._read_msgpack(reader)
-            call = CallParameters(**req)
-            logger.debug(f"[RPC] Received call: {call.method}")
-            result = await self._call_handler(call.module_id, call.method, call.params)
-            logger.debug(f"[RPC] call {call.method} completed successfully")
-            resp = CallResponse(
-                ok=True,
-                data=result,
-                unified_msg_origin=call.unified_msg_origin,
-                error_message="",
-            )
-
-        except Exception as exc:
-            logger.error(f"[RPC] call {req.get('method', '')} failed: {exc}")
-            resp = CallResponse(
-                ok=False,
-                unified_msg_origin=req.get("unified_msg_origin", ""),
-                data=None,
-                error_message=str(exc),
-            )
-
-        await self._write_msgpack(writer, resp.model_dump())
-        writer.close()
-        await writer.wait_closed()
-
     def load_modules(self, modules_dir: Path) -> None:
         """加载指定目录下的所有模块."""
         for module_path in modules_dir.iterdir():
@@ -140,19 +165,33 @@ class RPCServer(metaclass=SingletonMeta):
         for module in self.modules.values():
             await self._execute_hooks(module.start_hooks)
 
-        self.socket_path.unlink(missing_ok=True)
-        server = await asyncio.start_unix_server(  # type: ignore[arg-type]
-            self.handle_client, path=self.socket_path
-        )
-
-        logger.info(f"RPC Server started at {self.socket_path}")
         self._is_running = True
 
-        try:
-            async with server:
-                await server.serve_forever()
-        finally:
-            self._is_running = False
+        while self._is_running:
+            try:
+                # 确保 socket 可用
+                self.socket_path.unlink(missing_ok=True)
+
+                self.server = await asyncio.start_unix_server(  # type: ignore
+                    self._handle_client,
+                    path=self.socket_path,
+                )
+
+                logger.info(f"RPC Server started at {self.socket_path}")
+
+                async with self.server:
+                    await self.server.serve_forever()
+
+            except asyncio.CancelledError:
+                # 正常 shutdown
+                break
+
+            except Exception as e:
+                logger.exception(f"RPC Server crashed: {e}")
+                await asyncio.sleep(5)
+                logger.info("RPC Server restarting...")
+
+        self._is_running = False
 
     async def shutdown(self) -> None:
         """关闭 RPC 服务器."""
