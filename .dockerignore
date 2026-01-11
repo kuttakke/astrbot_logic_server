@@ -1,1 +1,37 @@
-.venv
+# 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+
+# Python 字节码缓存
+**/__pycache__/
+**/*.py[cod]
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# 其他常见开发垃圾
+.pytest_cache/
+.coverage
+coverage.xml
+.mypy_cache/
+.ruff_cache/
+.vscode/
+.idea/
+*.egg-info/
+dist/
+build/
+*.egg
+*.so
+
+# 通用排除
+.git
+.gitignore
+.env
+.env.*
+Dockerfile*
+docker-compose*
+
+# 代码生成
+generated/

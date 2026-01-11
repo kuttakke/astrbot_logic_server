@@ -8,3 +8,8 @@ wheels/
 
 # Virtual environments
 .venv
+
+# project-specific ignores
+logs/
+generated/
+__*/
