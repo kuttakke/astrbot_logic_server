@@ -1,30 +1,69 @@
-from service.service import api
+"""Test Module.
+
+演示 RPC 模块的自动注册和生命周期钩子功能。
+"""
+
+from loguru import logger
+
+from service.service import api, on_shutdown, on_start
 from service.structs import BaseParameters, BaseResponse
 
 
-# 具体的调用参数模型
 class TestParameters(BaseParameters):
+    """测试参数模型."""
+
     value: int
 
-    def to_dict(self) -> dict:
-        return {"value": self.value}
 
-
-# 具体的调用响应模型
 class TestResponse(BaseResponse):
+    """测试响应模型."""
+
     result: int
 
-    def to_dict(self) -> dict:
-        return {"result": self.result}
+
+# 全局状态（演示生命周期钩子）
+_initialized: bool = False
 
 
-class TestModule:
-    # function名自动传入
-    @api
-    async def test_function(self, params: TestParameters) -> TestResponse:
-        return TestResponse(result=params.value * 2)
+@on_start
+def init_resources() -> None:
+    """启动时初始化资源."""
+    global _initialized
+    logger.info("TestModule: 初始化资源中...")
+    _initialized = True
 
-    @api
-    @classmethod
-    async def test_classmethod(cls, params: TestParameters) -> TestResponse:
-        return TestResponse(result=params.value + 10)
+
+@on_shutdown
+def cleanup() -> None:
+    """关闭时清理资源."""
+    global _initialized
+    logger.info("TestModule: 清理资源中...")
+    _initialized = False
+
+
+@api(method_name="test_function")
+async def test_function(params: TestParameters) -> TestResponse:
+    """测试方法.
+
+    Args:
+        params: 测试参数
+
+    Returns:
+        测试响应
+    """
+    return TestResponse(result=params.value * 2)
+
+
+@api(method_name="test_function2")
+async def test_function2(params: TestParameters) -> TestResponse:
+    """另一个测试方法.
+
+    Args:
+        params: 测试参数
+
+    Returns:
+        测试响应
+    """
+    # test error
+    raise ValueError("This is a test error.")
+    # return TestResponse(result=params.value + 10)
