@@ -5,8 +5,17 @@
 
 from loguru import logger
 
-from service.service import api, on_shutdown, on_start
+from service.module import Module
 from service.structs import BaseParameters, BaseResponse
+
+# 创建模块实例
+_test_module = Module(
+    id="test_module",
+    name="TestModule",
+    description="A test module for demonstrating RPC functionality.",
+)
+
+m = _test_module  # 模块实例别名
 
 
 class TestParameters(BaseParameters):
@@ -21,27 +30,25 @@ class TestResponse(BaseResponse):
     result: int
 
 
-# 全局状态（演示生命周期钩子）
-_initialized: bool = False
+# ==================== 生命周期钩子 ====================
 
 
-@on_start
+@m.on_start
 def init_resources() -> None:
     """启动时初始化资源."""
-    global _initialized
     logger.info("TestModule: 初始化资源中...")
-    _initialized = True
 
 
-@on_shutdown
+@m.on_shutdown
 def cleanup() -> None:
     """关闭时清理资源."""
-    global _initialized
     logger.info("TestModule: 清理资源中...")
-    _initialized = False
 
 
-@api(method_name="test_function")
+# ==================== 简单 API ====================
+
+
+@m.api(method_name="test_function")
 async def test_function(params: TestParameters) -> TestResponse:
     """测试方法.
 
@@ -54,16 +61,7 @@ async def test_function(params: TestParameters) -> TestResponse:
     return TestResponse(result=params.value * 2)
 
 
-@api(method_name="test_function2")
+@m.api(method_name="test_function2")
 async def test_function2(params: TestParameters) -> TestResponse:
-    """另一个测试方法.
-
-    Args:
-        params: 测试参数
-
-    Returns:
-        测试响应
-    """
-    # test error
+    """测试错误处理."""
     raise ValueError("This is a test error.")
-    # return TestResponse(result=params.value + 10)
